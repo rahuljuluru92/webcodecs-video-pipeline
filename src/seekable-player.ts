@@ -37,8 +37,8 @@ const WARMUP_FRAME_COUNT = 6;
  * VideoDecoder only ever decodes forward from a keyframe).
  */
 export class SeekablePlayer {
-  private readonly canvas: HTMLCanvasElement;
-  private readonly ctx: CanvasRenderingContext2D;
+  private readonly canvas: OffscreenCanvas;
+  private readonly ctx: OffscreenCanvasRenderingContext2D;
   private readonly config: VideoDecoderConfig;
   private readonly chunks: EncodedVideoChunk[];
   private readonly keyframeIndex: KeyframeIndex;
@@ -57,7 +57,7 @@ export class SeekablePlayer {
   private playing = false;
 
   private constructor(
-    canvas: HTMLCanvasElement,
+    canvas: OffscreenCanvas,
     config: VideoDecoderConfig,
     chunks: EncodedVideoChunk[],
     durationSeconds: number,
@@ -76,12 +76,10 @@ export class SeekablePlayer {
   }
 
   static async load(
-    file: File,
-    canvas: HTMLCanvasElement,
+    arrayBuffer: ArrayBuffer,
+    canvas: OffscreenCanvas,
     handlers: SeekablePlayerHandlers = {},
   ): Promise<SeekablePlayer> {
-    const arrayBuffer = await file.arrayBuffer();
-
     let config: VideoDecoderConfig | undefined;
     let durationSeconds = 0;
     const chunks: EncodedVideoChunk[] = [];

@@ -12,26 +12,13 @@ async function seekTo(page: import("@playwright/test").Page, seconds: number): P
   await page.locator("#scrubber").dispatchEvent("change");
 }
 
-/** Samples a grid spread across the whole frame (not just one corner) so it
- * catches ffmpeg's `testsrc` moving elements (the sweeping gradient bar,
- * the frame-counter box) wherever they land — the static color bars alone
- * would look identical at any two timestamps. */
-function canvasSnapshot(page: import("@playwright/test").Page) {
-  return page.locator("#video-canvas").evaluate((canvasEl) => {
-    const canvas = canvasEl as HTMLCanvasElement;
-    const ctx = canvas.getContext("2d")!;
-    const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const samples: number[] = [];
-    const stepY = Math.max(1, Math.floor(height / 20));
-    const stepX = Math.max(1, Math.floor(width / 20));
-    for (let y = 0; y < height; y += stepY) {
-      for (let x = 0; x < width; x += stepX) {
-        const idx = (y * width + x) * 4;
-        samples.push(data[idx], data[idx + 1], data[idx + 2]);
-      }
-    }
-    return samples;
-  });
+/** A real screenshot of the canvas as displayed. Since Stage 4 transfers
+ * canvas control to the worker, ctx.getImageData() from the main thread no
+ * longer works — a screenshot of the composited page is the only way left
+ * to inspect what it's actually showing, and it's a fine substitute here:
+ * we only need "did the displayed frame change," not per-pixel values. */
+function canvasSnapshot(page: import("@playwright/test").Page): Promise<Buffer> {
+  return page.locator("#video-canvas").screenshot();
 }
 
 test("seeking to a specific timestamp renders the correct frame", async ({ page }) => {
