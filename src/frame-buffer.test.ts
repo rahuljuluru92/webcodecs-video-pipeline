@@ -71,4 +71,42 @@ describe("FrameBuffer", () => {
     const results = await Promise.all([first, second]);
     expect(results.sort()).toEqual([10, 20]);
   });
+
+  it("close() resolves a pending shift() with null instead of hanging forever", async () => {
+    const buffer = new FrameBuffer<number>();
+    const pending = buffer.shift();
+
+    buffer.close();
+
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it("close() resolves a pending waitUntilBelow() even though the threshold was never reached", async () => {
+    const buffer = new FrameBuffer<number>();
+    buffer.push(1);
+    buffer.push(2);
+
+    const pending = buffer.waitUntilBelow(1);
+    buffer.close();
+
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+  it("shift() still drains items already queued before close()", async () => {
+    const buffer = new FrameBuffer<number>();
+    buffer.push(1);
+    buffer.close();
+
+    await expect(buffer.shift()).resolves.toBe(1);
+    await expect(buffer.shift()).resolves.toBeNull();
+  });
+
+  it("push() after close() is a no-op", async () => {
+    const buffer = new FrameBuffer<number>();
+    buffer.close();
+    buffer.push(1);
+
+    expect(buffer.size).toBe(0);
+    await expect(buffer.shift()).resolves.toBeNull();
+  });
 });

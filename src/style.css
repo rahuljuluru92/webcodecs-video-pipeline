@@ -47,3 +47,19 @@ canvas {
   white-space: pre-wrap;
   opacity: 0.85;
 }
+
+.scrub-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.scrub-row input[type="range"] {
+  flex: 1;
+}
+
+.scrub-row span {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
