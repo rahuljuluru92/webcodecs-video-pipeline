@@ -1,5 +1,10 @@
 node_modules/
 dist/
+dist-ssr/
+*.local
+logs
+*.log
+npm-debug.log*
 
 # Local-only working notes (see project instructions) — never tracked
 ASSUMPTIONS.md
@@ -8,6 +13,10 @@ DECISIONS.md
 # Large test fixtures — see README for how to obtain/regenerate
 test-media/
 fixtures/
+
+# Test/build artifacts
+playwright-report/
+test-results/
 
 # OS / editor
 .DS_Store

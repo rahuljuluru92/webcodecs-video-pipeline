@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebCodecs Video Pipeline</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>WebCodecs Video Pipeline</h1>
+        <p class="subtitle">Stage 1 — basic decode-and-render</p>
+      </header>
+
+      <div class="controls">
+        <input id="file-input" type="file" accept="video/mp4" />
+        <button id="play-button" disabled>Play</button>
+      </div>
+
+      <canvas id="video-canvas" width="640" height="360"></canvas>
+
+      <p id="status" class="status">Choose an MP4 file to begin.</p>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
