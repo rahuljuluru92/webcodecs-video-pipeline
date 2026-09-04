@@ -10,7 +10,7 @@
     <div id="app">
       <header>
         <h1>WebCodecs Video Pipeline</h1>
-        <p class="subtitle">Stage 1 — basic decode-and-render</p>
+        <p class="subtitle">Stage 2 — buffering and adaptive prefetching</p>
       </header>
 
       <div class="controls">
@@ -21,6 +21,7 @@
       <canvas id="video-canvas" width="640" height="360"></canvas>
 
       <p id="status" class="status">Choose an MP4 file to begin.</p>
+      <p id="metrics" class="status"></p>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
