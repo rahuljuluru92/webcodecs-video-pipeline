@@ -30,13 +30,13 @@ async function playToEnd(
     .evaluate((el: HTMLInputElement) => Number(el.value));
   expect(finalTime).toBeGreaterThan(expectedDurationSeconds - 0.5);
 
-  const isCanvasBlank = await page.locator("#video-canvas").evaluate((canvasEl) => {
-    const canvas = canvasEl as HTMLCanvasElement;
-    const ctx = canvas.getContext("2d")!;
-    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    return data.every((value) => value === 0);
-  });
-  expect(isCanvasBlank).toBe(false);
+  // The canvas has had its control transferred to the worker (Stage 4), so
+  // ctx.getImageData() from the main thread no longer works — a real
+  // screenshot of the composited page is the only way left to inspect what
+  // it's actually displaying. A blank/black canvas compresses to a tiny PNG;
+  // this colorful test pattern doesn't.
+  const screenshot = await page.locator("#video-canvas").screenshot();
+  expect(screenshot.length).toBeGreaterThan(2000);
 
   expect(pageErrors).toEqual([]);
 }
