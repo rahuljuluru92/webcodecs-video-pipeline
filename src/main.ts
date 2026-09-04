@@ -5,6 +5,7 @@ const fileInput = document.querySelector<HTMLInputElement>("#file-input")!;
 const playButton = document.querySelector<HTMLButtonElement>("#play-button")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#video-canvas")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
+const metricsEl = document.querySelector<HTMLParagraphElement>("#metrics")!;
 
 if (!("VideoDecoder" in window)) {
   statusEl.textContent =
@@ -18,6 +19,7 @@ let isPlaying = false;
 fileInput.addEventListener("change", () => {
   selectedFile = fileInput.files?.[0] ?? null;
   playButton.disabled = !selectedFile || isPlaying;
+  metricsEl.textContent = "";
   statusEl.textContent = selectedFile
     ? `Loaded ${selectedFile.name} (${(selectedFile.size / 1_000_000).toFixed(1)} MB). Ready to play.`
     : "Choose an MP4 file to begin.";
@@ -30,6 +32,7 @@ playButton.addEventListener("click", async () => {
   playButton.disabled = true;
   fileInput.disabled = true;
   statusEl.textContent = "Decoding…";
+  metricsEl.textContent = "";
 
   const startedAt = performance.now();
 
@@ -37,6 +40,11 @@ playButton.addEventListener("click", async () => {
     await playVideoFile(selectedFile, canvas, {
       onFrame(framesRendered, durationSeconds) {
         statusEl.textContent = `Playing — frame ${framesRendered} (duration ${durationSeconds.toFixed(2)}s)`;
+      },
+      onMetrics(metrics) {
+        const line = `Decode throughput: ${metrics.decodeFps.toFixed(1)} fps · Time to first frame: ${metrics.timeToFirstFrameMs.toFixed(0)} ms · Buffer target: ${metrics.targetBufferDepth} frames`;
+        metricsEl.textContent = line;
+        console.log("[benchmark]", metrics);
       },
       onDone(totalFrames) {
         const elapsedSeconds = (performance.now() - startedAt) / 1000;
