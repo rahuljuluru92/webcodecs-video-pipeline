@@ -1,9 +1,13 @@
 import "./style.css";
-import { playVideoFile } from "./player";
+import { SeekablePlayer } from "./seekable-player";
 
 const fileInput = document.querySelector<HTMLInputElement>("#file-input")!;
 const playButton = document.querySelector<HTMLButtonElement>("#play-button")!;
+const reverseButton = document.querySelector<HTMLButtonElement>("#reverse-button")!;
+const speedSelect = document.querySelector<HTMLSelectElement>("#speed-select")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#video-canvas")!;
+const scrubber = document.querySelector<HTMLInputElement>("#scrubber")!;
+const timeDisplay = document.querySelector<HTMLSpanElement>("#time-display")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 const metricsEl = document.querySelector<HTMLParagraphElement>("#metrics")!;
 
@@ -13,54 +17,107 @@ if (!("VideoDecoder" in window)) {
   fileInput.disabled = true;
 }
 
-let selectedFile: File | null = null;
-let isPlaying = false;
+let player: SeekablePlayer | null = null;
+let isScrubbing = false;
+let reverseEnabled = false;
 
-fileInput.addEventListener("change", () => {
-  selectedFile = fileInput.files?.[0] ?? null;
-  playButton.disabled = !selectedFile || isPlaying;
+function formatTime(current: number, duration: number): string {
+  return `${current.toFixed(2)} / ${duration.toFixed(2)}s`;
+}
+
+function setControlsEnabled(enabled: boolean): void {
+  playButton.disabled = !enabled;
+  reverseButton.disabled = !enabled;
+  speedSelect.disabled = !enabled;
+  scrubber.disabled = !enabled;
+}
+
+fileInput.addEventListener("change", async () => {
+  const file = fileInput.files?.[0] ?? null;
+  if (!file) return;
+
+  setControlsEnabled(false);
+  playButton.textContent = "Play";
+  reverseEnabled = false;
+  reverseButton.textContent = "Reverse: Off";
   metricsEl.textContent = "";
-  statusEl.textContent = selectedFile
-    ? `Loaded ${selectedFile.name} (${(selectedFile.size / 1_000_000).toFixed(1)} MB). Ready to play.`
-    : "Choose an MP4 file to begin.";
-});
-
-playButton.addEventListener("click", async () => {
-  if (!selectedFile || isPlaying) return;
-
-  isPlaying = true;
-  playButton.disabled = true;
-  fileInput.disabled = true;
-  statusEl.textContent = "Decoding…";
-  metricsEl.textContent = "";
-
-  const startedAt = performance.now();
+  statusEl.textContent = `Loading ${file.name}…`;
 
   try {
-    await playVideoFile(selectedFile, canvas, {
-      onFrame(framesRendered, durationSeconds) {
-        statusEl.textContent = `Playing — frame ${framesRendered} (duration ${durationSeconds.toFixed(2)}s)`;
+    player = await SeekablePlayer.load(file, canvas, {
+      onFrame(currentTimeSeconds, durationSeconds) {
+        if (!isScrubbing) scrubber.value = String(currentTimeSeconds);
+        timeDisplay.textContent = formatTime(currentTimeSeconds, durationSeconds);
       },
-      onMetrics(metrics) {
-        const line = `Decode throughput: ${metrics.decodeFps.toFixed(1)} fps · Time to first frame: ${metrics.timeToFirstFrameMs.toFixed(0)} ms · Buffer target: ${metrics.targetBufferDepth} frames`;
-        metricsEl.textContent = line;
+      onSeek(metrics) {
+        statusEl.textContent = `Seeked to ${metrics.actualTimestampSeconds.toFixed(2)}s (requested ${metrics.requestedTimestampSeconds.toFixed(2)}s) in ${metrics.latencyMs.toFixed(1)} ms, decoding ${metrics.framesDecodedToReachTarget} frame(s).`;
+        console.log("[seek]", metrics);
+      },
+      onPlaybackMetrics(metrics) {
+        metricsEl.textContent = `Decode throughput: ${metrics.decodeFps.toFixed(1)} fps · Buffer target: ${metrics.targetBufferDepth} frames`;
         console.log("[benchmark]", metrics);
       },
-      onDone(totalFrames) {
-        const elapsedSeconds = (performance.now() - startedAt) / 1000;
-        statusEl.textContent = `Done. Rendered ${totalFrames} frames in ${elapsedSeconds.toFixed(2)}s.`;
+      onEnded() {
+        playButton.textContent = "Play";
+        statusEl.textContent = "Playback ended.";
       },
       onError(error) {
         console.error(error);
         statusEl.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
       },
     });
+
+    scrubber.min = "0";
+    scrubber.max = String(player.duration);
+    scrubber.value = "0";
+    timeDisplay.textContent = formatTime(0, player.duration);
+    statusEl.textContent = `Loaded ${file.name} (${(file.size / 1_000_000).toFixed(1)} MB). Ready.`;
+    setControlsEnabled(true);
   } catch (error) {
     console.error(error);
     statusEl.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
-  } finally {
-    isPlaying = false;
-    playButton.disabled = !selectedFile;
-    fileInput.disabled = false;
+  }
+});
+
+playButton.addEventListener("click", () => {
+  if (!player) return;
+  if (player.paused) {
+    player.play();
+    playButton.textContent = "Pause";
+  } else {
+    player.pause();
+    playButton.textContent = "Play";
+  }
+});
+
+reverseButton.addEventListener("click", () => {
+  if (!player) return;
+  reverseEnabled = !reverseEnabled;
+  player.setDirection(reverseEnabled ? -1 : 1);
+  reverseButton.textContent = reverseEnabled ? "Reverse: On" : "Reverse: Off";
+});
+
+speedSelect.addEventListener("change", () => {
+  if (!player) return;
+  player.setPlaybackRate(Number(speedSelect.value));
+});
+
+scrubber.addEventListener("input", () => {
+  isScrubbing = true;
+  timeDisplay.textContent = formatTime(Number(scrubber.value), player?.duration ?? 0);
+});
+
+scrubber.addEventListener("change", async () => {
+  if (!player) return;
+  const wasPlaying = !player.paused;
+
+  await player.seekTo(Number(scrubber.value));
+  isScrubbing = false;
+
+  if (wasPlaying) {
+    player.play();
+    playButton.textContent = "Pause";
+  } else {
+    playButton.textContent = "Play";
   }
 });
