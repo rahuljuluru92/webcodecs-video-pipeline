@@ -10,6 +10,7 @@ const scrubber = document.querySelector<HTMLInputElement>("#scrubber")!;
 const timeDisplay = document.querySelector<HTMLSpanElement>("#time-display")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 const metricsEl = document.querySelector<HTMLParagraphElement>("#metrics")!;
+const memoryStatsEl = document.querySelector<HTMLParagraphElement>("#memory-stats")!;
 
 if (!("VideoDecoder" in window) || !("Worker" in window) || !("OffscreenCanvas" in window)) {
   statusEl.textContent =
@@ -42,6 +43,7 @@ fileInput.addEventListener("change", async () => {
   reverseButton.textContent = "Reverse: Off";
   speedSelect.value = "1";
   metricsEl.textContent = "";
+  memoryStatsEl.textContent = "";
   statusEl.textContent = `Loading ${file.name}…`;
 
   try {
@@ -55,12 +57,16 @@ fileInput.addEventListener("change", async () => {
           timeDisplay.textContent = formatTime(currentTimeSeconds, durationSeconds);
         },
         onSeek(metrics) {
-          statusEl.textContent = `Seeked to ${metrics.actualTimestampSeconds.toFixed(2)}s (requested ${metrics.requestedTimestampSeconds.toFixed(2)}s) in ${metrics.latencyMs.toFixed(1)} ms, decoding ${metrics.framesDecodedToReachTarget} frame(s).`;
+          const cacheNote = metrics.cacheHit ? " (cache hit)" : "";
+          statusEl.textContent = `Seeked to ${metrics.actualTimestampSeconds.toFixed(2)}s (requested ${metrics.requestedTimestampSeconds.toFixed(2)}s) in ${metrics.latencyMs.toFixed(1)} ms, decoding ${metrics.framesDecodedToReachTarget} frame(s)${cacheNote}.`;
           console.log("[seek]", metrics);
         },
         onPlaybackMetrics(metrics) {
           metricsEl.textContent = `Decode throughput: ${metrics.decodeFps.toFixed(1)} fps · Buffer target: ${metrics.targetBufferDepth} frames`;
           console.log("[benchmark]", metrics);
+        },
+        onStats(stats) {
+          memoryStatsEl.textContent = `Live frames: ${stats.liveFrameCount} · Seek cache: ${stats.cacheSize} frames`;
         },
         onEnded() {
           playButton.textContent = "Play";

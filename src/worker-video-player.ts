@@ -1,10 +1,11 @@
-import type { PlaybackMetrics, SeekMetrics } from "./seekable-player";
+import type { MemoryStats, PlaybackMetrics, SeekMetrics } from "./seekable-player";
 import type { MainToWorkerMessage, WorkerToMainMessage } from "./worker-protocol";
 
 export interface WorkerVideoPlayerHandlers {
   onFrame?(currentTimeSeconds: number, durationSeconds: number): void;
   onSeek?(metrics: SeekMetrics): void;
   onPlaybackMetrics?(metrics: PlaybackMetrics): void;
+  onStats?(stats: MemoryStats): void;
   onEnded?(): void;
   onError?(error: unknown): void;
 }
@@ -39,7 +40,11 @@ export class WorkerVideoPlayer {
     return new WorkerVideoPlayer(canvas, handlers);
   }
 
-  async loadFile(file: File): Promise<void> {
+  /**
+   * @param frameCacheCapacity Optional override of the seek cache's
+   * capacity — see the same parameter on `SeekablePlayer.load`.
+   */
+  async loadFile(file: File, frameCacheCapacity?: number): Promise<void> {
     const arrayBuffer = await file.arrayBuffer();
 
     await new Promise<void>((resolve, reject) => {
@@ -56,7 +61,7 @@ export class WorkerVideoPlayer {
         }
       };
       this.worker.addEventListener("message", onMessage);
-      this.post({ type: "load", arrayBuffer }, [arrayBuffer]);
+      this.post({ type: "load", arrayBuffer, frameCacheCapacity }, [arrayBuffer]);
     });
   }
 
@@ -122,6 +127,9 @@ export class WorkerVideoPlayer {
       }
       case "playbackMetrics":
         this.handlers.onPlaybackMetrics?.(message.metrics);
+        break;
+      case "stats":
+        this.handlers.onStats?.(message.stats);
         break;
       case "ended":
         this.isPaused = true;

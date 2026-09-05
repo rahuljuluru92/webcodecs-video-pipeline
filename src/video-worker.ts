@@ -45,18 +45,25 @@ workerScope.onmessage = async (event) => {
         post({ type: "error", message: "Worker received 'load' before 'init' (no canvas)." });
         return;
       }
-      // Cancel any in-flight loop from a previously-loaded file before
-      // replacing it, so two players never race to draw on the same canvas.
-      player?.pause();
+      // Release any previously-loaded file's player (cancels its in-flight
+      // loop and closes its cached frames) before replacing it, so two
+      // players never race to draw on the same canvas or leak frames.
+      player?.dispose();
       try {
-        player = await SeekablePlayer.load(message.arrayBuffer, canvas, {
-          onFrame: (currentTimeSeconds, durationSeconds) =>
-            post({ type: "frame", currentTimeSeconds, durationSeconds }),
-          onSeek: (metrics) => post({ type: "seek", metrics }),
-          onPlaybackMetrics: (metrics) => post({ type: "playbackMetrics", metrics }),
-          onEnded: () => post({ type: "ended" }),
-          onError: (error) => post({ type: "error", message: errorMessage(error) }),
-        });
+        player = await SeekablePlayer.load(
+          message.arrayBuffer,
+          canvas,
+          {
+            onFrame: (currentTimeSeconds, durationSeconds) =>
+              post({ type: "frame", currentTimeSeconds, durationSeconds }),
+            onSeek: (metrics) => post({ type: "seek", metrics }),
+            onPlaybackMetrics: (metrics) => post({ type: "playbackMetrics", metrics }),
+            onStats: (stats) => post({ type: "stats", stats }),
+            onEnded: () => post({ type: "ended" }),
+            onError: (error) => post({ type: "error", message: errorMessage(error) }),
+          },
+          message.frameCacheCapacity,
+        );
         post({ type: "loaded", durationSeconds: player.duration });
       } catch (error) {
         post({ type: "error", message: errorMessage(error) });

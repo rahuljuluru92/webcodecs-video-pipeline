@@ -20,9 +20,24 @@ export function decodeChunkRange(
 ): Promise<VideoFrame[]> {
   return new Promise((resolve, reject) => {
     const frames: VideoFrame[] = [];
+    // On any failure path, the caller never receives `frames` — so any
+    // frames already produced before the failure would otherwise leak
+    // (nothing else holds a reference to close them). `settled` also
+    // guards against double-cleanup, since a decode error can trigger both
+    // the `error` callback below and a rejected `flush()` for the same
+    // underlying failure.
+    let settled = false;
+    function fail(error: unknown): void {
+      if (settled) return;
+      settled = true;
+      frames.forEach((frame) => frame.close());
+      frames.length = 0;
+      reject(error);
+    }
+
     const decoder = new VideoDecoder({
       output: (frame) => frames.push(frame),
-      error: (error) => reject(error),
+      error: (error) => fail(error),
     });
 
     try {
@@ -31,16 +46,18 @@ export function decodeChunkRange(
         decoder.decode(chunks[i]);
       }
     } catch (error) {
-      reject(error);
+      fail(error);
       return;
     }
 
     decoder
       .flush()
       .then(() => {
+        if (settled) return;
+        settled = true;
         decoder.close();
         resolve(frames);
       })
-      .catch(reject);
+      .catch((error) => fail(error));
   });
 }
