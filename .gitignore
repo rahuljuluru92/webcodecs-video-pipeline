@@ -1,5 +1,8 @@
 node_modules/
 dist/
+
+# AssemblyScript build output — regenerate with `npm run build:wasm`
+build/
 dist-ssr/
 *.local
 logs

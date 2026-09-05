@@ -4,6 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "build:wasm": "asc assembly/index.ts --target release",
+    "predev": "npm run build:wasm",
+    "prebuild": "npm run build:wasm",
+    "pretest:unit": "npm run build:wasm",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
@@ -13,6 +17,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "assemblyscript": "^0.28.20",
     "typescript": "~6.0.2",
     "vite": "^8.2.2",
     "vitest": "^3.2.7"
