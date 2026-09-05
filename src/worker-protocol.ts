@@ -2,6 +2,8 @@ import type { MemoryStats, PlaybackMetrics, SeekMetrics } from "./seekable-playe
 
 export type MainToWorkerMessage =
   | { type: "init"; canvas: OffscreenCanvas }
+  | { type: "initProcessingPort"; port: MessagePort }
+  | { type: "setBlurEnabled"; enabled: boolean }
   | {
       type: "load";
       arrayBuffer: ArrayBuffer;

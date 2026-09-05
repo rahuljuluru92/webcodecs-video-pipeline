@@ -4,6 +4,7 @@ import { AdaptivePrefetchController } from "./prefetch-controller";
 import { KeyframeIndex } from "./keyframe-index";
 import { decodeChunkRange } from "./gop-decoder";
 import { FrameCache } from "./frame-cache";
+import { PixelProcessorClient } from "./pixel-processor-client";
 
 export interface SeekMetrics {
   requestedTimestampSeconds: number;
@@ -48,6 +49,13 @@ const WARMUP_FRAME_COUNT = 6;
  * scrubbed session — see DECISIONS.md for the Stage 5 memory benchmark that
  * exercises this. */
 const DEFAULT_FRAME_CACHE_CAPACITY = 120;
+/** Box-blur radius used whenever the optional blur filter is enabled — a
+ * fixed value, not user-adjustable, to keep this feature's scope tight (see
+ * DECISIONS.md). 6 (a 13x13 kernel) is clearly visible without needing
+ * pixel-level inspection to confirm — a smaller radius (e.g. 3) is still a
+ * real, measurable effect (confirmed via byte-level screenshot diffing) but
+ * too subtle to see by eye at this project's canvas sizes. */
+const BLUR_RADIUS = 6;
 
 /**
  * A persistent, seekable WebCodecs video player: loads a file once, then
@@ -78,6 +86,8 @@ export class SeekablePlayer {
   /** Every open (not yet closed) VideoFrame this player currently owns,
    * cached or not — see MemoryStats. */
   private liveFrameCount = 0;
+  private pixelProcessor: PixelProcessorClient | null = null;
+  private blurEnabled = false;
 
   private constructor(
     canvas: OffscreenCanvas,
@@ -159,6 +169,18 @@ export class SeekablePlayer {
 
   setPlaybackRate(rate: number): void {
     this.playbackRate = rate;
+  }
+
+  /** Wires up the direct link to the processing worker. Blur stays off
+   * until both this and `setBlurEnabled(true)` have been called — see
+   * DECISIONS.md for why blur is a two-worker, SharedArrayBuffer-mediated
+   * feature rather than something done inline in this worker. */
+  setPixelProcessorPort(port: MessagePort): void {
+    this.pixelProcessor = new PixelProcessorClient(port);
+  }
+
+  setBlurEnabled(enabled: boolean): void {
+    this.blurEnabled = enabled;
   }
 
   setDirection(direction: 1 | -1): void {
@@ -248,7 +270,7 @@ export class SeekablePlayer {
     const targetFrame = framesInOrder[targetIndex];
     const actualTimestampUs = targetFrame.timestamp;
 
-    this.drawFrame(targetFrame);
+    await this.drawFrame(targetFrame);
     this.currentChunkIndex = gopStart + targetIndex;
     this.currentTimestampUs = actualTimestampUs;
 
@@ -269,9 +291,23 @@ export class SeekablePlayer {
     this.reportStats();
   }
 
-  private drawFrame(frame: VideoFrame): void {
+  private async drawFrame(frame: VideoFrame): Promise<void> {
     this.canvas.width = frame.displayWidth;
     this.canvas.height = frame.displayHeight;
+
+    if (this.blurEnabled && this.pixelProcessor && PixelProcessorClient.supportsFormat(frame.format)) {
+      try {
+        const rgba = await this.pixelProcessor.process(frame, BLUR_RADIUS);
+        const imageData = new ImageData(rgba, frame.displayWidth, frame.displayHeight);
+        this.ctx.putImageData(imageData, 0, 0);
+        return;
+      } catch (error) {
+        // Blur is additive, never required for core playback — fall
+        // through to the normal draw rather than breaking playback.
+        this.handlers.onError?.(error);
+      }
+    }
+
     this.ctx.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
   }
 
@@ -367,7 +403,7 @@ export class SeekablePlayer {
         break;
       }
 
-      this.drawFrame(frame);
+      await this.drawFrame(frame);
       this.currentChunkIndex++;
       this.currentTimestampUs = frame.timestamp;
       this.closeFrame(frame);
@@ -422,7 +458,7 @@ export class SeekablePlayer {
         const delayMs = Math.max(0, targetMs - performance.now());
         if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 
-        this.drawFrame(frame);
+        await this.drawFrame(frame);
         this.currentChunkIndex = gopStart + i;
         this.currentTimestampUs = frame.timestamp;
         this.closeFrame(frame);

@@ -10,7 +10,7 @@
     <div id="app">
       <header>
         <h1>WebCodecs Video Pipeline</h1>
-        <p class="subtitle">Stage 5 — adaptive memory management (bounded frame cache)</p>
+        <p class="subtitle">WASM box blur, processed on a second worker via SharedArrayBuffer</p>
       </header>
 
       <div class="controls">
@@ -23,6 +23,7 @@
           <option value="1.5">1.5x</option>
           <option value="2">2x</option>
         </select>
+        <button id="blur-button" disabled>Blur: Off</button>
       </div>
 
       <canvas id="video-canvas" width="640" height="360"></canvas>

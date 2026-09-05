@@ -12,4 +12,12 @@ const crossOriginIsolationHeaders = {
 export default defineConfig({
   server: { headers: crossOriginIsolationHeaders },
   preview: { headers: crossOriginIsolationHeaders },
+  // Vite bundles Worker entry chunks as IIFE by default at build time,
+  // independent of the `{ type: "module" }` passed to `new Worker()` at
+  // runtime — IIFE can't express top-level await, which the generated WASM
+  // loader glue (build/blur.release.js) uses to compile the module before
+  // its exports are available. Confirmed the hard way: `npm run build`
+  // failed with "Top-level await is currently not supported with the
+  // 'iife' output format" until this was set.
+  worker: { format: "es" },
 });

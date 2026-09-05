@@ -1,10 +1,11 @@
 import "./style.css";
-import { WorkerVideoPlayer } from "./worker-video-player";
+import { WorkerVideoPlayer, isBlurSupported } from "./worker-video-player";
 
 const fileInput = document.querySelector<HTMLInputElement>("#file-input")!;
 const playButton = document.querySelector<HTMLButtonElement>("#play-button")!;
 const reverseButton = document.querySelector<HTMLButtonElement>("#reverse-button")!;
 const speedSelect = document.querySelector<HTMLSelectElement>("#speed-select")!;
+const blurButton = document.querySelector<HTMLButtonElement>("#blur-button")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#video-canvas")!;
 const scrubber = document.querySelector<HTMLInputElement>("#scrubber")!;
 const timeDisplay = document.querySelector<HTMLSpanElement>("#time-display")!;
@@ -18,9 +19,17 @@ if (!("VideoDecoder" in window) || !("Worker" in window) || !("OffscreenCanvas" 
   fileInput.disabled = true;
 }
 
+// Blur is additive (see DECISIONS.md) — hide it entirely rather than let it
+// be toggled somewhere SharedArrayBuffer doesn't exist (needs cross-origin
+// isolation; see vite.config.ts).
+if (!isBlurSupported()) {
+  blurButton.hidden = true;
+}
+
 let player: WorkerVideoPlayer | null = null;
 let isScrubbing = false;
 let reverseEnabled = false;
+let blurEnabled = false;
 
 function formatTime(current: number, duration: number): string {
   return `${current.toFixed(2)} / ${duration.toFixed(2)}s`;
@@ -31,6 +40,7 @@ function setControlsEnabled(enabled: boolean): void {
   reverseButton.disabled = !enabled;
   speedSelect.disabled = !enabled;
   scrubber.disabled = !enabled;
+  if (isBlurSupported()) blurButton.disabled = !enabled;
 }
 
 fileInput.addEventListener("change", async () => {
@@ -41,6 +51,8 @@ fileInput.addEventListener("change", async () => {
   playButton.textContent = "Play";
   reverseEnabled = false;
   reverseButton.textContent = "Reverse: Off";
+  blurEnabled = false;
+  blurButton.textContent = "Blur: Off";
   speedSelect.value = "1";
   metricsEl.textContent = "";
   memoryStatsEl.textContent = "";
@@ -114,6 +126,13 @@ reverseButton.addEventListener("click", () => {
 speedSelect.addEventListener("change", () => {
   if (!player) return;
   player.setPlaybackRate(Number(speedSelect.value));
+});
+
+blurButton.addEventListener("click", () => {
+  if (!player) return;
+  blurEnabled = !blurEnabled;
+  player.setBlurEnabled(blurEnabled);
+  blurButton.textContent = blurEnabled ? "Blur: On" : "Blur: Off";
 });
 
 scrubber.addEventListener("input", () => {
