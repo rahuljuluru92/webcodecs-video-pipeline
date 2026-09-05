@@ -1,5 +1,14 @@
 import type { MemoryStats, PlaybackMetrics, SeekMetrics } from "./seekable-player";
 import type { MainToWorkerMessage, WorkerToMainMessage } from "./worker-protocol";
+import type { ProcessingWorkerReadyMessage, ProcessingWorkerSetupMessage } from "./pixel-mailbox";
+
+/** SharedArrayBuffer (and therefore the blur filter, which is built on it)
+ * only exists in a cross-origin-isolated context — see vite.config.ts for
+ * the COOP/COEP headers this requires, and DECISIONS.md for why blur
+ * degrades gracefully rather than being load-bearing for core playback. */
+export function isBlurSupported(): boolean {
+  return typeof SharedArrayBuffer !== "undefined" && self.crossOriginIsolated === true;
+}
 
 export interface WorkerVideoPlayerHandlers {
   onFrame?(currentTimeSeconds: number, durationSeconds: number): void;
@@ -20,6 +29,9 @@ export interface WorkerVideoPlayerHandlers {
  */
 export class WorkerVideoPlayer {
   private readonly worker: Worker;
+  /** Kept referenced so it isn't eligible for GC (which could terminate its
+   * underlying thread) — null when blur isn't supported in this context. */
+  private readonly processingWorker: Worker | null;
   private readonly handlers: WorkerVideoPlayerHandlers;
   private durationSeconds = 0;
   private currentTimeSeconds = 0;
@@ -34,6 +46,33 @@ export class WorkerVideoPlayer {
 
     const offscreen = canvas.transferControlToOffscreen();
     this.post({ type: "init", canvas: offscreen }, [offscreen]);
+
+    if (isBlurSupported()) {
+      // Two sibling Workers, linked by a direct MessageChannel this (main)
+      // thread sets up once and then steps out of — every per-frame
+      // message after this flows decode-worker <-> processing-worker
+      // directly, so the main thread stays idle (see DECISIONS.md).
+      this.processingWorker = new Worker(new URL("./processing-worker.ts", import.meta.url), {
+        type: "module",
+      });
+      // Must wait for the worker's own "ready" signal before sending
+      // anything: posting immediately races its module script's startup
+      // (it has a WASM-loading top-level await before it can attach a
+      // listener), and a message dispatched before any listener exists is
+      // lost outright, not queued — confirmed the hard way (see
+      // DECISIONS.md and ProcessingWorkerReadyMessage's doc comment).
+      const onReady = (event: MessageEvent<ProcessingWorkerReadyMessage>) => {
+        if (event.data.type !== "ready") return;
+        this.processingWorker!.removeEventListener("message", onReady);
+        const channel = new MessageChannel();
+        this.post({ type: "initProcessingPort", port: channel.port1 }, [channel.port1]);
+        const setupMessage: ProcessingWorkerSetupMessage = { type: "setPort", port: channel.port2 };
+        this.processingWorker!.postMessage(setupMessage, [channel.port2]);
+      };
+      this.processingWorker.addEventListener("message", onReady);
+    } else {
+      this.processingWorker = null;
+    }
   }
 
   static create(canvas: HTMLCanvasElement, handlers: WorkerVideoPlayerHandlers = {}): WorkerVideoPlayer {
@@ -93,6 +132,10 @@ export class WorkerVideoPlayer {
 
   setDirection(direction: 1 | -1): void {
     this.post({ type: "setDirection", direction });
+  }
+
+  setBlurEnabled(enabled: boolean): void {
+    this.post({ type: "setBlurEnabled", enabled });
   }
 
   seekTo(seconds: number): Promise<void> {

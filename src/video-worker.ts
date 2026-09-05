@@ -23,6 +23,13 @@ const workerScope = self as unknown as {
 
 let canvas: OffscreenCanvas | null = null;
 let player: SeekablePlayer | null = null;
+// The processing-worker port is set up once and reused for every file (like
+// the canvas); blur itself is NOT persisted here — like direction/speed, a
+// freshly-loaded player just defaults to off, so the UI resetting its own
+// toggle on every new file load can't silently drift out of sync with
+// worker-side state the way it briefly did during development (see
+// DECISIONS.md).
+let processingPort: MessagePort | null = null;
 
 function post(message: WorkerToMainMessage): void {
   workerScope.postMessage(message);
@@ -38,6 +45,15 @@ workerScope.onmessage = async (event) => {
   switch (message.type) {
     case "init":
       canvas = message.canvas;
+      break;
+
+    case "initProcessingPort":
+      processingPort = message.port;
+      player?.setPixelProcessorPort(processingPort);
+      break;
+
+    case "setBlurEnabled":
+      player?.setBlurEnabled(message.enabled);
       break;
 
     case "load": {
@@ -64,6 +80,7 @@ workerScope.onmessage = async (event) => {
           },
           message.frameCacheCapacity,
         );
+        if (processingPort) player.setPixelProcessorPort(processingPort);
         post({ type: "loaded", durationSeconds: player.duration });
       } catch (error) {
         post({ type: "error", message: errorMessage(error) });
