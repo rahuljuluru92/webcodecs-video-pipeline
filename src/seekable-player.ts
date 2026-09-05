@@ -3,12 +3,15 @@ import { FrameBuffer } from "./frame-buffer";
 import { AdaptivePrefetchController } from "./prefetch-controller";
 import { KeyframeIndex } from "./keyframe-index";
 import { decodeChunkRange } from "./gop-decoder";
+import { FrameCache } from "./frame-cache";
 
 export interface SeekMetrics {
   requestedTimestampSeconds: number;
   actualTimestampSeconds: number;
   latencyMs: number;
   framesDecodedToReachTarget: number;
+  /** True if the target GOP was already cached and nothing was decoded. */
+  cacheHit: boolean;
 }
 
 export interface PlaybackMetrics {
@@ -16,10 +19,20 @@ export interface PlaybackMetrics {
   targetBufferDepth: number;
 }
 
+export interface MemoryStats {
+  /** Decoded VideoFrames currently open (not yet closed) anywhere in this
+   * player — the direct, code-level measure of the GPU/native memory
+   * WebCodecs frames hold, independent of what performance.memory reports. */
+  liveFrameCount: number;
+  /** How many of those live frames are held by the seek cache specifically. */
+  cacheSize: number;
+}
+
 export interface SeekablePlayerHandlers {
   onFrame?(currentTimeSeconds: number, durationSeconds: number): void;
   onSeek?(metrics: SeekMetrics): void;
   onPlaybackMetrics?(metrics: PlaybackMetrics): void;
+  onStats?(stats: MemoryStats): void;
   onEnded?(): void;
   onError?(error: unknown): void;
 }
@@ -29,6 +42,12 @@ const MAX_DECODER_QUEUE_SIZE = 2;
  * feed loop — see the equivalent constant/comment in the Stage 2 design
  * notes in DECISIONS.md. */
 const WARMUP_FRAME_COUNT = 6;
+/** Default seek-frame-cache budget: 4 GOPs' worth at this project's fixture
+ * GOP size (30). A fixed frame-count budget, not tied to file length, so
+ * memory from caching stays bounded across an arbitrarily long/heavily-
+ * scrubbed session — see DECISIONS.md for the Stage 5 memory benchmark that
+ * exercises this. */
+const DEFAULT_FRAME_CACHE_CAPACITY = 120;
 
 /**
  * A persistent, seekable WebCodecs video player: loads a file once, then
@@ -46,6 +65,7 @@ export class SeekablePlayer {
   private readonly nominalPlaybackFps: number;
   private readonly prefetchController = new AdaptivePrefetchController();
   private readonly handlers: SeekablePlayerHandlers;
+  private readonly frameCache: FrameCache<number, VideoFrame>;
 
   /** Decode-order index of the last-displayed frame's chunk. */
   private currentChunkIndex = 0;
@@ -55,6 +75,9 @@ export class SeekablePlayer {
   /** Bumped on pause/seek/direction-change to cancel any in-flight play loop. */
   private playToken = 0;
   private playing = false;
+  /** Every open (not yet closed) VideoFrame this player currently owns,
+   * cached or not — see MemoryStats. */
+  private liveFrameCount = 0;
 
   private constructor(
     canvas: OffscreenCanvas,
@@ -62,6 +85,7 @@ export class SeekablePlayer {
     chunks: EncodedVideoChunk[],
     durationSeconds: number,
     handlers: SeekablePlayerHandlers,
+    frameCacheCapacity: number,
   ) {
     this.canvas = canvas;
     const ctx = canvas.getContext("2d");
@@ -73,12 +97,25 @@ export class SeekablePlayer {
     this.durationSeconds = durationSeconds;
     this.nominalPlaybackFps = chunks.length / durationSeconds;
     this.handlers = handlers;
+    this.frameCache = new FrameCache<number, VideoFrame>({
+      capacity: frameCacheCapacity,
+      onEvict: (frame) => this.closeFrame(frame),
+    });
   }
 
+  /**
+   * @param frameCacheCapacity Max frames the seek cache holds at once
+   * (default `DEFAULT_FRAME_CACHE_CAPACITY`). Exposed mainly so the Stage 5
+   * memory benchmark can also run with an effectively-unbounded cache, to
+   * demonstrate the bounded-vs-unbounded contrast the project's
+   * benchmarking rules ask for — production code should just use the
+   * default.
+   */
   static async load(
     arrayBuffer: ArrayBuffer,
     canvas: OffscreenCanvas,
     handlers: SeekablePlayerHandlers = {},
+    frameCacheCapacity: number = DEFAULT_FRAME_CACHE_CAPACITY,
   ): Promise<SeekablePlayer> {
     let config: VideoDecoderConfig | undefined;
     let durationSeconds = 0;
@@ -96,7 +133,14 @@ export class SeekablePlayer {
     if (!config) throw new Error("Failed to determine a decoder config for this file.");
     if (chunks.length === 0) throw new Error("No video frames found in this file.");
 
-    const player = new SeekablePlayer(canvas, config, chunks, durationSeconds, handlers);
+    const player = new SeekablePlayer(
+      canvas,
+      config,
+      chunks,
+      durationSeconds,
+      handlers,
+      frameCacheCapacity,
+    );
     await player.seekTo(0);
     return player;
   }
@@ -134,6 +178,29 @@ export class SeekablePlayer {
     this.playToken++;
   }
 
+  /** Releases every resource this player holds (cancels any in-flight play
+   * loop, closes every cached frame). Call before dropping a player in
+   * favor of a new one — e.g. loading a different file. */
+  dispose(): void {
+    this.playing = false;
+    this.playToken++;
+    this.frameCache.clear();
+  }
+
+  private trackFrame(frame: VideoFrame): VideoFrame {
+    this.liveFrameCount++;
+    return frame;
+  }
+
+  private closeFrame(frame: VideoFrame): void {
+    frame.close();
+    this.liveFrameCount--;
+  }
+
+  private reportStats(): void {
+    this.handlers.onStats?.({ liveFrameCount: this.liveFrameCount, cacheSize: this.frameCache.size });
+  }
+
   private restartPlayLoop(): void {
     const token = ++this.playToken;
     if (this.direction === 1) void this.runForward(token);
@@ -150,38 +217,56 @@ export class SeekablePlayer {
 
     const gopStart = this.keyframeIndex.chunkIndexForSeek(targetUs);
     const gopEnd = this.keyframeIndex.gopEndForChunkIndex(gopStart) ?? this.chunks.length;
+    const gopChunkIndices: number[] = [];
+    for (let i = gopStart; i < gopEnd; i++) gopChunkIndices.push(i);
 
-    let frames: VideoFrame[];
-    try {
-      frames = await decodeChunkRange(this.chunks, this.config, gopStart, gopEnd);
-    } catch (error) {
-      this.handlers.onError?.(error);
-      return;
+    const cacheHit = this.frameCache.hasAll(gopChunkIndices);
+    let framesInOrder: VideoFrame[];
+
+    if (cacheHit) {
+      // .get() also refreshes each entry's LRU recency.
+      framesInOrder = gopChunkIndices.map((chunkIndex) => this.frameCache.get(chunkIndex)!);
+    } else {
+      let decoded: VideoFrame[];
+      try {
+        decoded = await decodeChunkRange(this.chunks, this.config, gopStart, gopEnd);
+      } catch (error) {
+        this.handlers.onError?.(error);
+        return;
+      }
+      decoded.forEach((frame) => this.trackFrame(frame));
+
+      if (token !== this.playToken) {
+        decoded.forEach((frame) => this.closeFrame(frame));
+        return;
+      }
+      framesInOrder = decoded;
     }
 
-    if (token !== this.playToken) {
-      frames.forEach((frame) => frame.close());
-      return;
-    }
-
-    let targetIndex = frames.findIndex((frame) => frame.timestamp >= targetUs);
-    if (targetIndex === -1) targetIndex = frames.length - 1;
-    const targetFrame = frames[targetIndex];
+    let targetIndex = framesInOrder.findIndex((frame) => frame.timestamp >= targetUs);
+    if (targetIndex === -1) targetIndex = framesInOrder.length - 1;
+    const targetFrame = framesInOrder[targetIndex];
     const actualTimestampUs = targetFrame.timestamp;
 
     this.drawFrame(targetFrame);
     this.currentChunkIndex = gopStart + targetIndex;
     this.currentTimestampUs = actualTimestampUs;
 
-    frames.forEach((frame) => frame.close());
+    // The cache now owns every frame from a fresh decode (it closes
+    // whatever it evicts); cache-hit frames were already its property.
+    if (!cacheHit) {
+      framesInOrder.forEach((frame, i) => this.frameCache.set(gopStart + i, frame));
+    }
 
     this.handlers.onSeek?.({
       requestedTimestampSeconds: clamped,
       actualTimestampSeconds: actualTimestampUs / 1_000_000,
       latencyMs: performance.now() - startedAt,
-      framesDecodedToReachTarget: frames.length,
+      framesDecodedToReachTarget: cacheHit ? 0 : framesInOrder.length,
+      cacheHit,
     });
     this.handlers.onFrame?.(this.currentTime, this.durationSeconds);
+    this.reportStats();
   }
 
   private drawFrame(frame: VideoFrame): void {
@@ -210,6 +295,7 @@ export class SeekablePlayer {
           frame.close();
           return;
         }
+        this.trackFrame(frame);
         if (warmupStartMs === null) warmupStartMs = performance.now();
         warmupFrameCount++;
         if (!hasAdapted && warmupFrameCount >= WARMUP_FRAME_COUNT) {
@@ -267,7 +353,7 @@ export class SeekablePlayer {
       const frame = await buffer.shift();
       if (frame === null) break;
       if (token !== this.playToken) {
-        frame.close();
+        this.closeFrame(frame);
         break;
       }
 
@@ -277,15 +363,16 @@ export class SeekablePlayer {
       if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 
       if (token !== this.playToken) {
-        frame.close();
+        this.closeFrame(frame);
         break;
       }
 
       this.drawFrame(frame);
       this.currentChunkIndex++;
       this.currentTimestampUs = frame.timestamp;
-      frame.close();
+      this.closeFrame(frame);
       this.handlers.onFrame?.(this.currentTime, this.durationSeconds);
+      this.reportStats();
     }
 
     await feedLoop;
@@ -309,9 +396,10 @@ export class SeekablePlayer {
         this.handlers.onError?.(error);
         return;
       }
+      frames.forEach((frame) => this.trackFrame(frame));
 
       if (token !== this.playToken) {
-        frames.forEach((frame) => frame.close());
+        frames.forEach((frame) => this.closeFrame(frame));
         return;
       }
 
@@ -319,7 +407,7 @@ export class SeekablePlayer {
       for (let idx = 0; idx < frames.length; idx++) {
         if (frames[idx].timestamp <= this.currentTimestampUs) startPlayIndex = idx;
       }
-      for (let idx = startPlayIndex + 1; idx < frames.length; idx++) frames[idx].close();
+      for (let idx = startPlayIndex + 1; idx < frames.length; idx++) this.closeFrame(frames[idx]);
 
       const playbackStartMs = performance.now();
       const anchorTimestampUs = frames[startPlayIndex].timestamp;
@@ -337,13 +425,14 @@ export class SeekablePlayer {
         this.drawFrame(frame);
         this.currentChunkIndex = gopStart + i;
         this.currentTimestampUs = frame.timestamp;
-        frame.close();
+        this.closeFrame(frame);
         this.handlers.onFrame?.(this.currentTime, this.durationSeconds);
+        this.reportStats();
       }
       // Close whatever's left: either the loop finished normally (i === -1,
       // this is a no-op) or it broke early on cancellation, in which case
       // frames[0..i] are still open.
-      for (let j = i; j >= 0; j--) frames[j].close();
+      for (let j = i; j >= 0; j--) this.closeFrame(frames[j]);
 
       if (token !== this.playToken) return;
 

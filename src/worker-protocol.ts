@@ -1,8 +1,15 @@
-import type { PlaybackMetrics, SeekMetrics } from "./seekable-player";
+import type { MemoryStats, PlaybackMetrics, SeekMetrics } from "./seekable-player";
 
 export type MainToWorkerMessage =
   | { type: "init"; canvas: OffscreenCanvas }
-  | { type: "load"; arrayBuffer: ArrayBuffer }
+  | {
+      type: "load";
+      arrayBuffer: ArrayBuffer;
+      /** Optional override of the seek-frame-cache capacity — used by the
+       * Stage 5 memory benchmark to run with an effectively-unbounded
+       * cache for comparison. Omit to use SeekablePlayer's default. */
+      frameCacheCapacity?: number;
+    }
   | { type: "play" }
   | { type: "pause" }
   | { type: "seekTo"; requestId: number; seconds: number }
@@ -15,5 +22,6 @@ export type WorkerToMainMessage =
   | { type: "seek"; metrics: SeekMetrics }
   | { type: "seekAck"; requestId: number }
   | { type: "playbackMetrics"; metrics: PlaybackMetrics }
+  | { type: "stats"; stats: MemoryStats }
   | { type: "ended" }
   | { type: "error"; message: string };
